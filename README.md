@@ -4,6 +4,9 @@
 ![Apache](https://img.shields.io/badge/license-Apache-blue.svg)
 ![CI](https://github.com/hakolao/egui_winit_vulkano/workflows/CI/badge.svg)
 
+This a fork of original [egui_winit_vulkano](https://github.com/hakolao/egui_winit_vulkano) that has stopped updating to catch up the new version of egui, winit and vulkano,
+I maintain this fork crate to work with the recent version of egui 0.30, vulkano 0.34 and wint 0.30.
+
 This is an [egui](https://github.com/emilk/egui) integration for
 [winit](https://github.com/rust-windowing/winit) and [vulkano](https://github.com/vulkano-rs/vulkano).
 
