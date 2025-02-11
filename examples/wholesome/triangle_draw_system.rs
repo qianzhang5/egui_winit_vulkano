@@ -80,8 +80,7 @@ impl TriangleDrawSystem {
                 .entry_point("main")
                 .unwrap();
 
-            let vertex_input_state =
-                MyVertex::per_vertex().definition(&vs.info().input_interface).unwrap();
+            let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
             let stages =
                 [PipelineShaderStageCreateInfo::new(vs), PipelineShaderStageCreateInfo::new(fs)];
@@ -94,22 +93,26 @@ impl TriangleDrawSystem {
             )
             .unwrap();
 
-            GraphicsPipeline::new(gfx_queue.device().clone(), None, GraphicsPipelineCreateInfo {
-                stages: stages.into_iter().collect(),
-                vertex_input_state: Some(vertex_input_state),
-                input_assembly_state: Some(InputAssemblyState::default()),
-                viewport_state: Some(ViewportState::default()),
-                rasterization_state: Some(RasterizationState::default()),
-                multisample_state: Some(MultisampleState::default()),
-                color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    subpass.num_color_attachments(),
-                    ColorBlendAttachmentState::default(),
-                )),
-                depth_stencil_state: Some(DepthStencilState::default()),
-                dynamic_state: [DynamicState::Viewport].into_iter().collect(),
-                subpass: Some(subpass.clone().into()),
-                ..GraphicsPipelineCreateInfo::layout(layout)
-            })
+            GraphicsPipeline::new(
+                gfx_queue.device().clone(),
+                None,
+                GraphicsPipelineCreateInfo {
+                    stages: stages.into_iter().collect(),
+                    vertex_input_state: Some(vertex_input_state),
+                    input_assembly_state: Some(InputAssemblyState::default()),
+                    viewport_state: Some(ViewportState::default()),
+                    rasterization_state: Some(RasterizationState::default()),
+                    multisample_state: Some(MultisampleState::default()),
+                    color_blend_state: Some(ColorBlendState::with_attachment_states(
+                        subpass.num_color_attachments(),
+                        ColorBlendAttachmentState::default(),
+                    )),
+                    depth_stencil_state: Some(DepthStencilState::default()),
+                    dynamic_state: [DynamicState::Viewport].into_iter().collect(),
+                    subpass: Some(subpass.clone().into()),
+                    ..GraphicsPipelineCreateInfo::layout(layout)
+                },
+            )
             .unwrap()
         };
 
@@ -122,12 +125,10 @@ impl TriangleDrawSystem {
         }
     }
 
-    pub fn draw(
-        &self,
-        viewport_dimensions: [u32; 2],
-    ) -> Arc<SecondaryAutoCommandBuffer<Arc<StandardCommandBufferAllocator>>> {
+    pub fn draw(&self, viewport_dimensions: [u32; 2]) -> Arc<SecondaryAutoCommandBuffer> {
+        //}<Arc<StandardCommandBufferAllocator>>> {
         let mut builder = AutoCommandBufferBuilder::secondary(
-            &self.command_buffer_allocator,
+            self.command_buffer_allocator.clone(),
             self.gfx_queue.queue_family_index(),
             CommandBufferUsage::MultipleSubmit,
             CommandBufferInheritanceInfo {
@@ -136,25 +137,27 @@ impl TriangleDrawSystem {
             },
         )
         .unwrap();
-        builder
-            .bind_pipeline_graphics(self.pipeline.clone())
-            .unwrap()
-            .set_viewport(
-                0,
-                [Viewport {
-                    offset: [0.0, 0.0],
-                    extent: [viewport_dimensions[0] as f32, viewport_dimensions[1] as f32],
-                    depth_range: 0.0..=1.0,
-                }]
-                .into_iter()
-                .collect(),
-            )
-            .unwrap()
-            .bind_vertex_buffers(0, self.vertex_buffer.clone())
-            .unwrap()
-            .draw(self.vertex_buffer.len() as u32, 1, 0, 0)
-            .unwrap();
-        builder.build().unwrap()
+        unsafe {
+            builder
+                .bind_pipeline_graphics(self.pipeline.clone())
+                .unwrap()
+                .set_viewport(
+                    0,
+                    [Viewport {
+                        offset: [0.0, 0.0],
+                        extent: [viewport_dimensions[0] as f32, viewport_dimensions[1] as f32],
+                        depth_range: 0.0..=1.0,
+                    }]
+                    .into_iter()
+                    .collect(),
+                )
+                .unwrap()
+                .bind_vertex_buffers(0, self.vertex_buffer.clone())
+                .unwrap()
+                .draw(self.vertex_buffer.len() as u32, 1, 0, 0)
+                .unwrap();
+            builder.build().unwrap()
+        }
     }
 }
 

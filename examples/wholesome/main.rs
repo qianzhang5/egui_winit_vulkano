@@ -8,8 +8,9 @@
 // according to those terms.
 
 #![allow(clippy::eq_op)]
-
+use std::error::Error;
 use std::sync::Arc;
+use std::time::Duration;
 
 use egui::{load::SizedTexture, Context, ImageSource, Visuals};
 use egui_winit_vulkano::{Gui, GuiConfig};
@@ -26,12 +27,12 @@ use vulkano_util::{
     renderer::DEFAULT_IMAGE_FORMAT,
     window::{VulkanoWindows, WindowDescriptor},
 };
-use winit::{
-    event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-};
 
 use crate::{renderer::RenderPipeline, time_info::TimeInfo};
+
+use winit::{
+    application::ApplicationHandler, event::WindowEvent, event_loop::EventLoop, window::WindowId,
+};
 
 mod frame_system;
 mod renderer;
@@ -100,29 +101,31 @@ impl GuiState {
             .vscroll(true)
             .open(show_texture_window1)
             .show(&egui_context, |ui| {
-                ui.image(ImageSource::Texture(SizedTexture::new(*image_texture_id1, [
-                    256.0, 256.0,
-                ])));
+                ui.image(ImageSource::Texture(SizedTexture::new(
+                    *image_texture_id1,
+                    [256.0, 256.0],
+                )));
             });
         egui::Window::new("Mah Doge")
             .resizable(true)
             .vscroll(true)
             .open(show_texture_window2)
             .show(&egui_context, |ui| {
-                ui.image(ImageSource::Texture(SizedTexture::new(*image_texture_id2, [
-                    300.0, 200.0,
-                ])));
+                ui.image(ImageSource::Texture(SizedTexture::new(
+                    *image_texture_id2,
+                    [300.0, 200.0],
+                )));
             });
         egui::Window::new("Scene").resizable(true).vscroll(true).open(show_scene_window).show(
             &egui_context,
             |ui| {
-                ui.image(ImageSource::Texture(SizedTexture::new(*scene_texture_id, [
-                    scene_view_size[0] as f32,
-                    scene_view_size[1] as f32,
-                ])));
+                ui.image(ImageSource::Texture(SizedTexture::new(
+                    *scene_texture_id,
+                    [scene_view_size[0] as f32, scene_view_size[1] as f32],
+                )));
             },
         );
-        egui::Area::new("fps")
+        egui::Area::new("fps".into())
             .fixed_pos(egui::pos2(window_size[0] - 0.05 * window_size[0], 10.0))
             .show(&egui_context, |ui| {
                 ui.label(format!("{fps:.2}"));
@@ -130,87 +133,136 @@ impl GuiState {
     }
 }
 
-pub fn main() {
-    // Winit event loop & our time tracking initialization
-    let event_loop = EventLoop::new();
-    let mut time = TimeInfo::new();
-    // Create renderer for our scene & ui
-    let scene_view_size = [256, 256];
-    // Vulkano context
-    let context = VulkanoContext::new(VulkanoConfig::default());
-    // Vulkano windows (create one)
-    let mut windows = VulkanoWindows::default();
-    windows.create_window(&event_loop, &context, &WindowDescriptor::default(), |ci| {
-        ci.image_format = Format::B8G8R8A8_UNORM;
-        ci.min_image_count = ci.min_image_count.max(2);
-    });
-    // Create gui as main render pass (no overlay means it clears the image each frame)
-    let mut gui = {
-        let renderer = windows.get_primary_renderer_mut().unwrap();
-        Gui::new(
-            &event_loop,
-            renderer.surface(),
-            renderer.graphics_queue(),
-            renderer.swapchain_format(),
-            GuiConfig::default(),
-        )
-    };
-    // Create a simple image to which we'll draw the triangle scene
-    let scene_image = ImageView::new_default(
-        Image::new(
-            context.memory_allocator().clone(),
-            ImageCreateInfo {
-                image_type: ImageType::Dim2d,
-                format: DEFAULT_IMAGE_FORMAT,
-                extent: [scene_view_size[0], scene_view_size[1], 1],
-                array_layers: 1,
-                usage: ImageUsage::SAMPLED | ImageUsage::COLOR_ATTACHMENT,
-                ..Default::default()
-            },
-            AllocationCreateInfo::default(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+fn main() -> Result<(), impl Error> {
+    let event_loop = EventLoop::new().unwrap();
+    let mut app = App::new(&event_loop);
 
-    // Create our render pipeline
-    let mut scene_render_pipeline = RenderPipeline::new(
-        context.graphics_queue().clone(),
-        DEFAULT_IMAGE_FORMAT,
-        &renderer::Allocators {
-            command_buffers: Arc::new(StandardCommandBufferAllocator::new(
-                context.device().clone(),
-                StandardCommandBufferAllocatorCreateInfo {
-                    secondary_buffer_count: 32,
+    event_loop.run_app(&mut app)
+}
+
+struct App {
+    context: VulkanoContext,
+    windows: VulkanoWindows,
+    window_id: Option<WindowId>,
+    gui_state: Option<GuiState>,
+    gui: Option<Gui>,
+    scene_render_pipeline: Option<RenderPipeline>,
+    scene_image: Option<Arc<ImageView>>,
+    time: Option<TimeInfo>,
+}
+
+impl App {
+    fn new(_event_loop: &EventLoop<()>) -> Self {
+        let context = VulkanoContext::new(VulkanoConfig::default());
+        let windows = VulkanoWindows::default();
+        Self {
+            context,
+            windows,
+            gui: None,
+            window_id: None,
+            scene_render_pipeline: None,
+            gui_state: None,
+            scene_image: None,
+            time: None,
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let App { context, windows, .. } = self;
+        self.window_id =
+            Some(windows.create_window(event_loop, context, &WindowDescriptor::default(), |ci| {
+                ci.image_format = vulkano::format::Format::B8G8R8A8_UNORM;
+                ci.min_image_count = ci.min_image_count.max(2);
+            }));
+
+        let mut gui = {
+            let renderer = windows.get_renderer_mut(self.window_id.unwrap()).unwrap();
+            Gui::new(
+                event_loop,
+                renderer.surface(),
+                renderer.graphics_queue(),
+                renderer.swapchain_format(),
+                GuiConfig::default(),
+                None,
+            )
+        };
+
+        let scene_view_size = [256, 256];
+        // Create a simple image to which we'll draw the triangle scene
+        let scene_image = ImageView::new_default(
+            Image::new(
+                context.memory_allocator().clone(),
+                ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    format: DEFAULT_IMAGE_FORMAT,
+                    extent: [scene_view_size[0], scene_view_size[1], 1],
+                    array_layers: 1,
+                    usage: ImageUsage::SAMPLED | ImageUsage::COLOR_ATTACHMENT,
                     ..Default::default()
                 },
-            )),
-            memory: context.memory_allocator().clone(),
-        },
-    );
-    // Create gui state (pass anything your state requires)
-    let mut gui_state = GuiState::new(&mut gui, scene_image.clone(), scene_view_size);
-    // Event loop run
-    event_loop.run(move |event, _, control_flow| {
-        let renderer = windows.get_primary_renderer_mut().unwrap();
-        // Update Egui integration so the UI works!
-        match event {
-            Event::WindowEvent { event, window_id } if window_id == renderer.window().id() => {
-                let _pass_events_to_game = !gui.update(&event);
-                match event {
-                    WindowEvent::Resized(_) => {
-                        renderer.resize();
-                    }
-                    WindowEvent::ScaleFactorChanged { .. } => {
-                        renderer.resize();
-                    }
-                    WindowEvent::CloseRequested => {
-                        *control_flow = ControlFlow::Exit;
-                    }
-                    _ => (),
-                }
+                AllocationCreateInfo::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Create our render pipeline
+        self.scene_render_pipeline = Some(RenderPipeline::new(
+            context.graphics_queue().clone(),
+            DEFAULT_IMAGE_FORMAT,
+            &renderer::Allocators {
+                command_buffers: Arc::new(StandardCommandBufferAllocator::new(
+                    context.device().clone(),
+                    StandardCommandBufferAllocatorCreateInfo {
+                        secondary_buffer_count: 32,
+                        ..Default::default()
+                    },
+                )),
+                memory: context.memory_allocator().clone(),
+            },
+        ));
+        self.scene_image = Some(scene_image.clone());
+        self.gui_state = Some(GuiState::new(&mut gui, scene_image, scene_view_size));
+        self.gui = Some(gui);
+        self.time = Some(TimeInfo::new());
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        window_id_: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        if self.window_id.unwrap() != window_id_ {
+            return;
+        }
+        let App {
+            windows,
+            gui,
+            time,
+            scene_render_pipeline: scence_render_pipeline,
+            gui_state,
+            scene_image,
+            ..
+        } = self;
+        let gui = gui.as_mut().expect("oops");
+        let scence_render_pipeline = scence_render_pipeline.as_mut().expect("oops");
+        let gui_state = gui_state.as_mut().expect("ooops");
+        let time = time.as_mut().expect("oops");
+        let scene_image = scene_image.as_ref().unwrap();
+        let redraw = {
+            let window = windows.get_window(window_id_).unwrap();
+            let response = gui.update(window, &event);
+            if response.consumed {
+                return;
             }
-            Event::RedrawRequested(window_id) if window_id == window_id => {
+            response.repaint
+        };
+        let renderer = windows.get_renderer_mut(window_id_).unwrap();
+        match event {
+            WindowEvent::RedrawRequested => {
                 // Set immediate UI in redraw here
                 // It's a closure giving access to egui context inside which you can call anything.
                 // Here we're calling the layout of our `gui_state`.
@@ -220,11 +272,11 @@ pub fn main() {
                 });
                 // Render UI
                 // Acquire swapchain future
-                match renderer.acquire() {
+                match renderer.acquire(Some(Duration::from_secs(1)), |_| {}) {
                     Ok(future) => {
                         // Draw scene
                         let after_scene_draw =
-                            scene_render_pipeline.render(future, scene_image.clone());
+                            scence_render_pipeline.render(future, scene_image.clone());
                         // Render gui
                         let after_future =
                             gui.draw_on_image(after_scene_draw, renderer.swapchain_image_view());
@@ -240,10 +292,13 @@ pub fn main() {
                 // Update fps & dt
                 time.update();
             }
-            Event::MainEventsCleared => {
-                renderer.window().request_redraw();
-            }
-            _ => (),
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
+            WindowEvent::Resized(_size) => renderer.resize(),
+            WindowEvent::ScaleFactorChanged { .. } => renderer.resize(),
+            _ => {}
         }
-    });
+        if redraw {
+            renderer.window().request_redraw();
+        }
+    }
 }

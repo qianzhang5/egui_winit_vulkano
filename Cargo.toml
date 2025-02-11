@@ -20,14 +20,16 @@ x11 = ["winit/x11", "egui-winit/x11"]
 
 [dependencies]
 ahash = "0.8.3"
-egui-winit = { version = "0.24", default-features = false }
-egui = "0.24"
 image = { version = "0.24.5", optional = true }
-winit = { version = "0.28", default-features = false }
-vulkano = "0.34"
-vulkano-shaders = "0.34"
+egui-winit = { version = "0.30", default-features = false }
+egui = "0.30"
+winit = { version = "0.30", default-features = true, features=["rwh_06"]}
+
+# Compatiable to vk-fw's vulkano using, have to use local git source.
+vulkano = { version = "0.35.0", default-features = false, features = ["macros"] }
+vulkano-shaders = { version = "0.35.0"}
 
 [dev-dependencies]
 cgmath = "0.18.0"
-egui_demo_lib = "0.24"
-vulkano-util = "0.34"
+egui_demo_lib = "0.30"
+vulkano-util = { version = "0.35"}

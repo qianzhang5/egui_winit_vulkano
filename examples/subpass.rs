@@ -9,9 +9,11 @@
 
 #![allow(clippy::eq_op)]
 
+use std::error::Error;
 use std::sync::Arc;
 
-use egui::{epaint::Shadow, style::Margin, vec2, Align, Align2, Color32, Frame, Rounding, Window};
+use egui::Margin;
+use egui::{epaint::Shadow, vec2, Align, Align2, Color32, Frame, Rounding, Window};
 use egui_winit_vulkano::{Gui, GuiConfig};
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
@@ -40,66 +42,90 @@ use vulkano::{
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     sync::GpuFuture,
 };
+
 use vulkano_util::{
     context::{VulkanoConfig, VulkanoContext},
     window::{VulkanoWindows, WindowDescriptor},
 };
 use winit::{
-    event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    application::ApplicationHandler, event::WindowEvent, event_loop::EventLoop, window::WindowId,
 };
+
 // Render a triangle (scene) and a gui from a subpass on top of it (with some transparent fill)
 
-pub fn main() {
-    // Winit event loop
-    let event_loop = EventLoop::new();
-    // Vulkano context
-    let context = VulkanoContext::new(VulkanoConfig::default());
-    // Vulkano windows (create one)
-    let mut windows = VulkanoWindows::default();
-    windows.create_window(&event_loop, &context, &WindowDescriptor::default(), |ci| {
-        ci.image_format = vulkano::format::Format::B8G8R8A8_UNORM;
-        ci.min_image_count = ci.min_image_count.max(2);
-    });
-    // Create out gui pipeline
-    let mut gui_pipeline = SimpleGuiPipeline::new(
-        context.graphics_queue().clone(),
-        windows.get_primary_renderer_mut().unwrap().swapchain_format(),
-        context.memory_allocator(),
-    );
-    // Create gui subpass
-    let mut gui = Gui::new_with_subpass(
-        &event_loop,
-        windows.get_primary_renderer_mut().unwrap().surface(),
-        windows.get_primary_renderer_mut().unwrap().graphics_queue(),
-        gui_pipeline.gui_pass(),
-        windows.get_primary_renderer_mut().unwrap().swapchain_format(),
-        GuiConfig::default(),
-    );
+fn main() -> Result<(), impl Error> {
+    let event_loop = EventLoop::new().unwrap();
+    let mut app = App::new(&event_loop);
 
-    // Create gui state (pass anything your state requires)
-    event_loop.run(move |event, _, control_flow| {
-        let renderer = windows.get_primary_renderer_mut().unwrap();
-        match event {
-            Event::WindowEvent { event, window_id } if window_id == renderer.window().id() => {
-                // Update Egui integration so the UI works!
-                let _pass_events_to_game = !gui.update(&event);
-                match event {
-                    WindowEvent::Resized(_) => {
-                        renderer.resize();
-                    }
-                    WindowEvent::ScaleFactorChanged { .. } => {
-                        renderer.resize();
-                    }
-                    WindowEvent::CloseRequested => {
-                        *control_flow = ControlFlow::Exit;
-                    }
-                    _ => (),
-                }
+    event_loop.run_app(&mut app)
+}
+
+struct App {
+    context: VulkanoContext,
+    windows: VulkanoWindows,
+    window_id: Option<WindowId>,
+    pipeline: Option<SimpleGuiPipeline>,
+    gui: Option<Gui>,
+}
+
+impl App {
+    fn new(_event_loop: &EventLoop<()>) -> Self {
+        let context = VulkanoContext::new(VulkanoConfig::default());
+        let windows = VulkanoWindows::default();
+        Self { context, windows, window_id: None, gui: None, pipeline: None }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let App { context, windows, .. } = self;
+        self.window_id =
+            Some(windows.create_window(event_loop, context, &WindowDescriptor::default(), |ci| {
+                ci.image_format = vulkano::format::Format::B8G8R8A8_UNORM;
+                ci.min_image_count = ci.min_image_count.max(2);
+            }));
+
+        // Create out gui pipeline
+        self.pipeline = Some(SimpleGuiPipeline::new(
+            context.graphics_queue().clone(),
+            windows.get_primary_renderer_mut().unwrap().swapchain_format(),
+            context.memory_allocator(),
+        ));
+        // Create gui subpass
+        let renderer = windows.get_renderer_mut(self.window_id.unwrap()).unwrap();
+        self.gui = Some(Gui::new_with_subpass(
+            event_loop,
+            renderer.surface(),
+            renderer.graphics_queue(),
+            self.pipeline.as_ref().unwrap().gui_pass(),
+            renderer.swapchain_format(),
+            GuiConfig::default(),
+            None,
+        ));
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        window_id_: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        if self.window_id.unwrap() != window_id_ {
+            return;
+        }
+        let windows = &mut self.windows;
+        let redraw = {
+            let window = windows.get_window(window_id_).unwrap();
+            let response = self.gui.as_mut().unwrap().update(window, &event);
+            if response.consumed {
+                return;
             }
-            Event::RedrawRequested(window_id) if window_id == window_id => {
-                // Set immediate UI in redraw here
-                gui.immediate_ui(|gui| {
+            response.repaint
+        };
+        let renderer = windows.get_renderer_mut(window_id_).unwrap();
+        match event {
+            WindowEvent::RedrawRequested => {
+                self.gui.as_mut().unwrap().immediate_ui(|gui| {
                     let ctx = gui.context();
                     Window::new("Transparent Window")
                         .anchor(Align2([Align::RIGHT, Align::TOP]), vec2(-545.0, 500.0))
@@ -107,11 +133,14 @@ pub fn main() {
                         .default_width(300.0)
                         .frame(
                             Frame::none()
-                                .fill(Color32::from_white_alpha(125))
+                                .fill(Color32::from_white_alpha(220))
                                 .shadow(Shadow {
-                                    extrusion: 8.0,
+                                    blur: 8.0,
+                                    spread: 8.0,
+                                    offset: vec2(1.0, 1.0),
                                     color: Color32::from_black_alpha(125),
                                 })
+                                .multiply_with_opacity(0.3)
                                 .rounding(Rounding::same(5.0))
                                 .inner_margin(Margin::same(10.0)),
                         )
@@ -119,15 +148,13 @@ pub fn main() {
                             ui.colored_label(Color32::BLACK, "Content :)");
                         });
                 });
-
-                // Acquire swapchain future
-                match renderer.acquire() {
+                match renderer.acquire(Some(std::time::Duration::from_secs(1)), |_| {}) {
                     Ok(future) => {
-                        // Render gui
-                        let after_future =
-                            gui_pipeline.render(future, renderer.swapchain_image_view(), &mut gui);
-
-                        // Present swapchain
+                        let after_future = self.pipeline.as_mut().unwrap().render(
+                            future,
+                            renderer.swapchain_image_view(),
+                            self.gui.as_mut().unwrap(),
+                        );
                         renderer.present(after_future, true);
                     }
                     Err(vulkano::VulkanError::OutOfDate) => {
@@ -136,12 +163,15 @@ pub fn main() {
                     Err(e) => panic!("Failed to acquire swapchain future: {}", e),
                 };
             }
-            Event::MainEventsCleared => {
-                renderer.window().request_redraw();
-            }
-            _ => (),
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
+            WindowEvent::Resized(_size) => renderer.resize(),
+            WindowEvent::ScaleFactorChanged { .. } => renderer.resize(),
+            _ => {}
         }
-    });
+        if redraw {
+            renderer.window().request_redraw();
+        }
+    }
 }
 
 struct SimpleGuiPipeline {
@@ -150,7 +180,7 @@ struct SimpleGuiPipeline {
     pipeline: Arc<GraphicsPipeline>,
     subpass: Subpass,
     vertex_buffer: Subbuffer<[MyVertex]>,
-    command_buffer_allocator: StandardCommandBufferAllocator,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 }
 
 impl SimpleGuiPipeline {
@@ -180,13 +210,13 @@ impl SimpleGuiPipeline {
         .unwrap();
 
         // Create an allocator for command-buffer data
-        let command_buffer_allocator = StandardCommandBufferAllocator::new(
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             queue.device().clone(),
             StandardCommandBufferAllocatorCreateInfo {
                 secondary_buffer_count: 32,
                 ..Default::default()
             },
-        );
+        ));
 
         Self { queue, render_pass, pipeline, subpass, vertex_buffer, command_buffer_allocator }
     }
@@ -227,8 +257,7 @@ impl SimpleGuiPipeline {
             .entry_point("main")
             .unwrap();
 
-        let vertex_input_state =
-            MyVertex::per_vertex().definition(&vs.info().input_interface).unwrap();
+        let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
         let stages =
             [PipelineShaderStageCreateInfo::new(vs), PipelineShaderStageCreateInfo::new(fs)];
@@ -243,21 +272,25 @@ impl SimpleGuiPipeline {
 
         let subpass = Subpass::from(render_pass, 0).unwrap();
         (
-            GraphicsPipeline::new(device, None, GraphicsPipelineCreateInfo {
-                stages: stages.into_iter().collect(),
-                vertex_input_state: Some(vertex_input_state),
-                input_assembly_state: Some(InputAssemblyState::default()),
-                viewport_state: Some(ViewportState::default()),
-                rasterization_state: Some(RasterizationState::default()),
-                multisample_state: Some(MultisampleState::default()),
-                color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    subpass.num_color_attachments(),
-                    ColorBlendAttachmentState::default(),
-                )),
-                dynamic_state: [DynamicState::Viewport].into_iter().collect(),
-                subpass: Some(subpass.clone().into()),
-                ..GraphicsPipelineCreateInfo::layout(layout)
-            })
+            GraphicsPipeline::new(
+                device,
+                None,
+                GraphicsPipelineCreateInfo {
+                    stages: stages.into_iter().collect(),
+                    vertex_input_state: Some(vertex_input_state),
+                    input_assembly_state: Some(InputAssemblyState::default()),
+                    viewport_state: Some(ViewportState::default()),
+                    rasterization_state: Some(RasterizationState::default()),
+                    multisample_state: Some(MultisampleState::default()),
+                    color_blend_state: Some(ColorBlendState::with_attachment_states(
+                        subpass.num_color_attachments(),
+                        ColorBlendAttachmentState::default(),
+                    )),
+                    dynamic_state: [DynamicState::Viewport].into_iter().collect(),
+                    subpass: Some(subpass.clone().into()),
+                    ..GraphicsPipelineCreateInfo::layout(layout)
+                },
+            )
             .unwrap(),
             subpass,
         )
@@ -270,17 +303,17 @@ impl SimpleGuiPipeline {
         gui: &mut Gui,
     ) -> Box<dyn GpuFuture> {
         let mut builder = AutoCommandBufferBuilder::primary(
-            &self.command_buffer_allocator,
+            self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
 
         let dimensions = image.image().extent();
-        let framebuffer = Framebuffer::new(self.render_pass.clone(), FramebufferCreateInfo {
-            attachments: vec![image],
-            ..Default::default()
-        })
+        let framebuffer = Framebuffer::new(
+            self.render_pass.clone(),
+            FramebufferCreateInfo { attachments: vec![image], ..Default::default() },
+        )
         .unwrap();
 
         // Begin render pipeline commands
@@ -299,7 +332,7 @@ impl SimpleGuiPipeline {
 
         // Render first draw pass
         let mut secondary_builder = AutoCommandBufferBuilder::secondary(
-            &self.command_buffer_allocator,
+            self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
             CommandBufferUsage::MultipleSubmit,
             CommandBufferInheritanceInfo {
@@ -308,33 +341,38 @@ impl SimpleGuiPipeline {
             },
         )
         .unwrap();
-        secondary_builder
-            .bind_pipeline_graphics(self.pipeline.clone())
-            .unwrap()
-            .set_viewport(
-                0,
-                [Viewport {
-                    offset: [0.0, 0.0],
-                    extent: [dimensions[0] as f32, dimensions[1] as f32],
-                    depth_range: 0.0..=1.0,
-                }]
-                .into_iter()
-                .collect(),
-            )
-            .unwrap()
-            .bind_vertex_buffers(0, self.vertex_buffer.clone())
-            .unwrap()
-            .draw(self.vertex_buffer.len() as u32, 1, 0, 0)
-            .unwrap();
+        unsafe {
+            secondary_builder
+                .bind_pipeline_graphics(self.pipeline.clone())
+                .unwrap()
+                .set_viewport(
+                    0,
+                    [Viewport {
+                        offset: [0.0, 0.0],
+                        extent: [dimensions[0] as f32, dimensions[1] as f32],
+                        depth_range: 0.0..=1.0,
+                    }]
+                    .into_iter()
+                    .collect(),
+                )
+                .unwrap()
+                .bind_vertex_buffers(0, self.vertex_buffer.clone())
+                .unwrap()
+                .draw(self.vertex_buffer.len() as u32, 1, 0, 0)
+                .unwrap();
+        }
         let cb = secondary_builder.build().unwrap();
         builder.execute_commands(cb).unwrap();
 
         // Move on to next subpass for gui
         builder
-            .next_subpass(Default::default(), SubpassBeginInfo {
-                contents: SubpassContents::SecondaryCommandBuffers,
-                ..Default::default()
-            })
+            .next_subpass(
+                Default::default(),
+                SubpassBeginInfo {
+                    contents: SubpassContents::SecondaryCommandBuffers,
+                    ..Default::default()
+                },
+            )
             .unwrap();
         // Draw gui on subpass
         let cb = gui.draw_on_subpass_image([dimensions[0], dimensions[1]]);
