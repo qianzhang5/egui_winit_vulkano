@@ -157,7 +157,7 @@ impl Gui {
 
     /// Returns a set of resources used to construct the render pipeline. These can be reused
     /// to create additional pipelines and buffers to be rendered in a `PaintCallback`.
-    pub fn render_resources(&self) -> RenderResources {
+    pub fn render_resources(&self) -> RenderResources<'_> {
         self.renderer.render_resources()
     }
 
